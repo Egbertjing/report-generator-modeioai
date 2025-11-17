@@ -3,9 +3,9 @@ from openai import OpenAI
 import os
 import gradio as gr
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
-load_dotenv() 
+# load_dotenv() 
 
 
 system_prompt = os.environ['system_prompt']
