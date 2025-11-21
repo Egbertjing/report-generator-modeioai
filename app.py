@@ -4,18 +4,16 @@ import os
 from dotenv import load_dotenv
 import tempfile
 import time
-import sys # Importing sys for potential use, though not strictly necessary here
+import sys 
 
 # Load environment variables from .env file
-load_dotenv() 
+# load_dotenv() 
 
 # Get system prompt and initialize constants
-# Use .get() with a fallback to avoid KeyError if environment variables are missing
-# Using sys.exit(1) is not ideal in a Gradio app, so we'll rely on the try-except blocks later.
-system_prompt = os.environ.get('system_prompt', "你是一位专业的隐私和安全顾问，请根据用户提供的文件和查询生成一份详细的报告。")
+system_prompt = os.environ.get('system_prompt')
 api_key = os.environ.get('OPENAI_API_KEY')
 base_url = os.environ.get('OPENAI_API_BASE')
-model_name = os.environ.get('DEFAULT_MODEL', 'gpt-3.5-turbo')
+model_name = os.environ.get('DEFAULT_MODEL')
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -23,21 +21,21 @@ client = OpenAI(
     base_url=base_url,
 )
 
-# Function to generate content and prepare the downloadable file using streaming
-def generate_report(message, file):
-    """
-    Generates the privacy report using streaming and prepares it as a downloadable file.
+
+def generate_report(message, file, regulations): 
     
-    This function is a generator that yields partial text results to the Textbox 
-    while yielding None for the File component, and finally yields the complete 
-    report and the file path.
+
+    regulations_str = ""
+    if regulations:
+        # 将选中的法规列表转换为逗号分隔的字符串
+        regulations_str = ", ".join(regulations)
+        # 将法规要求添加到用户消息中
+        message = f"请严格参照以下法规进行审查: **{regulations_str}**。\n\n" + message
+        # print(message)
+        
+    full_report = f"--- 审查法规: {regulations_str if regulations_str else '未选择'} ---\n\n" # 报告开头增加法规信息
     
-    :param message: The user's text input.
-    :param file: A list of uploaded file paths from gr.Files.
-    :return: A generator yielding tuples of (report_text, file_path_for_download)
-    """
-    
-    # 1. Read uploaded file content
+    # 2. Read uploaded file content
     file_content = ""
     if file is not None:
         # file is typically a list of file paths from gr.Files
@@ -52,9 +50,7 @@ def generate_report(message, file):
                 yield f"读取文件失败: {e}", None
                 return # Stop execution
 
-    full_report = ""
-
-    # 2. Call the Model (Streaming)
+    # 3. Call the Model (Streaming)
     try:
         # Set stream=True for streaming functionality
         stream = client.chat.completions.create(
@@ -66,14 +62,13 @@ def generate_report(message, file):
             stream=True, 
         )
 
-        # 3. Stream output and build full report
+        # 4. Stream output and build full report
         for chunk in stream:
             # Check for content and append/yield
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 chunk_content = chunk.choices[0].delta.content
                 full_report += chunk_content
                 # Yield the current report text and None for the file path
-                # This updates the report_output Textbox in real-time
                 yield full_report, None
 
     except Exception as e:
@@ -81,27 +76,25 @@ def generate_report(message, file):
         yield f"报告生成失败，请检查API密钥或模型名称: {e}", None
         return # Stop execution
 
-    # 4. Create a temporary file for download using the full_report
-    # Only execute if streaming was successful and full_report is populated
+    # 5. Create a temporary file for download using the full_report
     tmp_file_path = None
     if full_report:
         try:
-            # Create a temporary file with a .txt extension. Gradio manages temp file cleanup.
+            # Create a temporary file with a .txt extension.
             with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=f"_{int(time.time())}_report.txt", encoding="utf-8") as tmp_file:
                 tmp_file.write(full_report)
                 tmp_file_path = tmp_file.name
                 
         except Exception as e:
-            # Handle error during file writing by updating the report text
+            # Handle error during file writing
             full_report += f"\n\n[错误] 临时文件创建失败，无法下载: {e}"
 
-    # 5. Yield the final result with the downloadable file path.
-    # This final yield updates both the Textbox (last time) and the gr.File component.
+    # 6. Yield the final result with the downloadable file path.
     yield full_report, tmp_file_path
 
 # Gradio Interface Definition
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("<div align='center'><h1>Modeio Bot - 隐私报告生成器</h1></div>")  # Centered Title
+    gr.Markdown("<div align='center'><h1>Modeio Bot - 隐私报告生成器</h1></div>")
     gr.Markdown(
         """
         <details>
@@ -118,7 +111,14 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     # Input section
     with gr.Row():
         with gr.Column(scale=1):
-            file_upload = gr.Files(label="上传文件 (.txt/.md) (Upload File)", file_types=[".txt", ".md"], height=173.59)
+            # ！！！新增 Checklist ！！！
+            regulation_checklist = gr.CheckboxGroup(
+                label="选择适用的法规 (Select Applicable Regulations)",
+                choices=["GDPR", "AIACT", "HIPAA"],
+                value=["GDPR"] # 默认选中 GDPR 作为示例
+            )
+            file_upload = gr.Files(label="上传文件 (.txt/.md) (Upload File)", file_types=[".txt", ".md"], height=125)
+            
         with gr.Column(scale=2):
             # Input message box
             input_textbox = gr.Textbox(
@@ -127,7 +127,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 autofocus=True
             )
             # Generation button
-    generate_button = gr.Button("生成报告 (Generate Report)", variant="primary")
+            generate_button = gr.Button("生成报告 (Generate Report)", variant="primary")
 
     # Output section
     report_output = gr.Textbox(
@@ -137,24 +137,21 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         interactive=False
     )
     
-    # Download section (The new feature: gr.File acts as a download link)
+    # Download section
     download_file = gr.File(
         label="下载报告 (.txt) (Download Report)",
         file_types=[".txt"],
         height=100,
-        type="filepath", # This is crucial: it tells Gradio to expect a local file path
-        interactive=False # The user can't upload to this, only download from it
+        type="filepath",
+        interactive=False
     )
 
     # Define the action when the button is clicked
-    # The outputs are now mapped to report_output and download_file
+    # ！！！修改 inputs 以包含 regulation_checklist ！！！
     generate_button.click(
         fn=generate_report,
-        inputs=[input_textbox, file_upload],
+        inputs=[input_textbox, file_upload, regulation_checklist],
         outputs=[report_output, download_file],
-        # api_name="generate_report_stream" # Optional: provides a streaming API endpoint
     )
 
-
-# demo.launch(server_name="0.0.0.0",server_port=10000)
-demo.launch()
+demo.launch(server_name="0.0.0.0",server_port=10000)
